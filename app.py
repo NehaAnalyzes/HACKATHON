@@ -1,7 +1,7 @@
 import streamlit as st
 import streamlit_authenticator as stauth
-import yaml
-from yaml.loader import SafeLoader
+import pickle
+from pathlib import Path
 
 # Page config
 st.set_page_config(
@@ -11,61 +11,65 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Load configuration
-try:
-    with open('config.yaml') as file:
-        config = yaml.load(file, Loader=SafeLoader)
-except FileNotFoundError:
-    st.error("⚠️ Configuration file not found. Using default credentials.")
-    # Fallback config if file missing
-    config = {
-        'credentials': {
-            'usernames': {
-                'admin': {
-                    'name': 'Admin User',
-                    'password': '$2b$12$KIXxLq3h5L5ZvBxZ5vZxZe5vZxZe5vZxZe5vZxZe5vZxZe5vZxZ'
-                }
-            }
-        },
-        'cookie': {
-            'name': 'powergrid_auth',
-            'key': 'powergrid_sih_2025_secret_key',
-            'expiry_days': 30
-        }
+# Initialize session state for authentication
+if 'authentication_status' not in st.session_state:
+    st.session_state['authentication_status'] = None
+if 'name' not in st.session_state:
+    st.session_state['name'] = None
+if 'username' not in st.session_state:
+    st.session_state['username'] = None
+
+# Simple authentication (without external library complexity)
+def check_login(username, password):
+    """Simple authentication check"""
+    users = {
+        'admin': 'admin123',
+        'manager': 'manager123'
     }
+    return users.get(username) == password
 
-# Create authenticator
-authenticator = stauth.Authenticate(
-    config['credentials'],
-    config['cookie']['name'],
-    config['cookie']['key'],
-    config['cookie']['expiry_days'],
-    config.get('preauthorized', {})
-)
-
-# Login widget
-name, authentication_status, username = authenticator.login('Login', 'main')
-
-# Authentication logic
-if authentication_status:
-    # Sidebar with logout
-    with st.sidebar:
-        st.write(f'Welcome *{name}*')
-        authenticator.logout('Logout', 'sidebar')
+# Sidebar with login/logout
+with st.sidebar:
+    st.markdown("### 🔌 POWERGRID Forecast")
+    st.markdown("**Smart India Hackathon 2025**")
+    st.markdown("Ministry of Power")
+    st.markdown("---")
+    
+    # Check if already logged in
+    if st.session_state['authentication_status']:
+        st.success(f"✅ Logged in as: **{st.session_state['name']}**")
+        if st.button("Logout", use_container_width=True):
+            st.session_state['authentication_status'] = None
+            st.session_state['name'] = None
+            st.session_state['username'] = None
+            st.rerun()
         
-        st.markdown("---")
-        st.markdown("### 🔌 POWERGRID Forecast")
-        st.markdown("**Smart India Hackathon 2025**")
-        st.markdown("Ministry of Power")
-        
-        # System health indicators
         st.markdown("---")
         st.markdown("### 📊 System Status")
         st.success("🟢 Model: Active")
         st.info("📡 API: Connected")
         st.success("💾 Database: Online")
+    else:
+        st.markdown("### 🔐 Login")
+        username_input = st.text_input("Username", key="username_input")
+        password_input = st.text_input("Password", type="password", key="password_input")
         
-    # Main welcome page
+        if st.button("Login", type="primary", use_container_width=True):
+            if check_login(username_input, password_input):
+                st.session_state['authentication_status'] = True
+                st.session_state['username'] = username_input
+                st.session_state['name'] = username_input.capitalize()
+                st.success("✅ Login successful!")
+                st.rerun()
+            else:
+                st.error("❌ Invalid username or password")
+        
+        st.markdown("---")
+        st.info("**Demo Credentials:**\n\nUsername: `admin`\nPassword: `admin123`")
+
+# Main content area
+if st.session_state['authentication_status']:
+    # User is logged in - show dashboard
     st.title("🔌 POWERGRID Material Demand Forecasting System")
     st.markdown("### Welcome to the Supply Chain Intelligence Platform")
     
@@ -108,26 +112,37 @@ if authentication_status:
         st.write("**Training Time:** 0.62 seconds")
         st.write("**Total Predictions:** 15,847")
         st.write("**Average Response Time:** < 100ms")
+        st.write(f"**Logged in as:** {st.session_state['name']}")
+
+else:
+    # Not logged in - show login prompt
+    st.title("🔌 POWERGRID Material Demand Forecasting")
+    st.markdown("### Smart India Hackathon 2025")
     
-elif authentication_status == False:
-    st.error('Username/password is incorrect')
-    st.info("**Demo Credentials:**")
-    st.code("Username: admin\nPassword: admin123")
-    
-elif authentication_status == None:
-    st.warning('Please enter your username and password')
     st.info("""
-    ### 🔌 POWERGRID Material Demand Forecasting
-    
-    **Smart India Hackathon 2025**
+    ## Welcome to POWERGRID's Supply Chain Intelligence Platform
     
     This system provides:
-    - ✅ Accurate demand forecasting (5.31% MAPE)
-    - ✅ Real-time inventory management
-    - ✅ Advanced analytics & reporting
-    - ✅ Intelligent alerts & notifications
+    - ✅ **Accurate demand forecasting** (5.31% MAPE)
+    - ✅ **Real-time inventory management**
+    - ✅ **Advanced analytics & reporting**
+    - ✅ **Intelligent alerts & notifications**
+    
+    ### 🔐 Please login to continue
+    
+    Use the login form in the sidebar to access the system.
     
     **Demo Credentials:**
     - Username: `admin` | Password: `admin123`
     - Username: `manager` | Password: `manager123`
     """)
+    
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Model MAPE", "5.31%", "-69%")
+    with col2:
+        st.metric("R² Score", "0.9471", "+94.71%")
+    with col3:
+        st.metric("Training Time", "0.62 sec", "Real-time")
+    with col4:
+        st.metric("Total Projects", "1,199", "+12")
