@@ -2,9 +2,14 @@ import streamlit as st
 from datetime import datetime
 
 # Check authentication
+# Check authentication
 if 'authentication_status' not in st.session_state or not st.session_state['authentication_status']:
-    st.warning("Please login from the main page")
+    st.warning("⚠️ Please login to access this page")
+    st.info("👉 Click the link below to go to the login page")
+    if st.button("🔐 Go to Login Page", type="primary"):
+        st.switch_page("app.py")
     st.stop()
+
 
 st.title("⚙️ User Settings & Customization")
 st.markdown("### Personalize your POWERGRID experience")
@@ -177,3 +182,4 @@ with col2:
 st.markdown("---")
 st.caption(f"Settings last modified: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | "
           f"User: {st.session_state.get('username', 'admin')}")
+
