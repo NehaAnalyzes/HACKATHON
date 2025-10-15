@@ -168,23 +168,11 @@ if st.session_state['authentication_status']:
         st.write("Lead time updates")
 
 else:
-    # Not logged in - show login prompt
+    # Not logged in
     st.title("🔌 POWERGRID Material Demand Forecasting")
-  
+    st.markdown("### Supply Chain Intelligence Platform")
     
-    st.info("""
-    ## Welcome to POWERGRID's Supply Chain Intelligence Platform
+    st.markdown("---")
     
-   
-    
-    ### 🔐 Please login to continue
-    
-   
-    
-    col3, col4 = st.columns(2)
-
-    with col3:
-        st.metric("Training Time", "0.62 sec", "Real-time")
-    with col4:
-        st.metric("Total Projects", "1,199", "+12")
+    st.info("### 🔐 Authentication Required\n\nPlease login using the sidebar to access the platform.")
 
