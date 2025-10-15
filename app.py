@@ -5,7 +5,7 @@ from pathlib import Path
 
 # Page config
 st.set_page_config(
-    page_title="POWERGRID Material Forecast",
+    page_title="POWERGRID Material Forecasting System",
     page_icon="🔌",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -31,7 +31,6 @@ def check_login(username, password):
 # Sidebar with login/logout
 with st.sidebar:
     st.markdown("### 🔌 POWERGRID Forecast")
-    st.markdown("**Smart India Hackathon 2025**")
     st.markdown("Ministry of Power")
     st.markdown("---")
     
@@ -171,32 +170,21 @@ if st.session_state['authentication_status']:
 else:
     # Not logged in - show login prompt
     st.title("🔌 POWERGRID Material Demand Forecasting")
-    st.markdown("### Smart India Hackathon 2025")
+  
     
     st.info("""
     ## Welcome to POWERGRID's Supply Chain Intelligence Platform
     
-    This system provides:
-    - ✅ **Accurate demand forecasting** (5.31% MAPE)
-    - ✅ **Real-time inventory management**
-    - ✅ **Advanced analytics & reporting**
-    - ✅ **Intelligent alerts & notifications**
+   
     
     ### 🔐 Please login to continue
     
-    Use the login form in the sidebar to access the system.
+   
     
-    **Demo Credentials:**
-    - Username: `admin` | Password: `admin123`
-    - Username: `manager` | Password: `manager123`
-    """)
-    
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric("Model MAPE", "5.31%", "-69%")
-    with col2:
-        st.metric("R² Score", "0.9471", "+94.71%")
+    col3, col4 = st.columns(2)
+
     with col3:
         st.metric("Training Time", "0.62 sec", "Real-time")
     with col4:
         st.metric("Total Projects", "1,199", "+12")
+
