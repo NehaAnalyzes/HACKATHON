@@ -87,7 +87,7 @@ if st.session_state['authentication_status']:
     
     st.markdown("---")
     
-    # Quick Navigation Buttons - ADDED THIS SECTION
+    # Quick Navigation Buttons - FIXED SECTION
     st.markdown("### ⚡ Quick Navigation")
     st.markdown("Click any button below to access different modules:")
     
@@ -95,21 +95,21 @@ if st.session_state['authentication_status']:
     
     with col1:
         if st.button("🏠 Dashboard", use_container_width=True, type="primary", help="View inventory overview and alerts"):
-            st.switch_page("pages/1_🏠_Dashboard.py")
+            st.switch_page("pages/1_Dashboard.py")
         
         if st.button("📊 Demand Forecast", use_container_width=True, help="Generate real-time predictions"):
-            st.switch_page("pages/2_📊_Demand_Forecast.py")
+            st.switch_page("pages/2_Demand_Forecast.py")
     
     with col2:
         if st.button("📦 Inventory Management", use_container_width=True, help="Track materials and stock levels"):
-            st.switch_page("pages/3_📦_Inventory_Management.py")
+            st.switch_page("pages/3_Inventory_Management.py")
         
         if st.button("📑 Reports & Analytics", use_container_width=True, help="Generate comprehensive reports"):
-            st.switch_page("pages/4_📑_Reports_Analytics.py")
+            st.switch_page("pages/4_Reports_Analytics.py")
     
     with col3:
         if st.button("⚙️ Settings", use_container_width=True, help="Customize your experience"):
-            st.switch_page("pages/5_⚙️_Settings.py")
+            st.switch_page("pages/5_Settings.py")
     
     st.markdown("---")
     
