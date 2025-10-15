@@ -13,7 +13,37 @@ st.markdown("### Real-time insights into procurement and inventory status")
 
 st.markdown("---")
 
-# REMOVED: Key Metrics Section
+# Key Metrics
+col1, col2, col3, col4 = st.columns(4)
+
+with col1:
+    st.metric(
+        label="Model Accuracy",
+        value="94.71%",
+        delta="+4.71%"
+    )
+
+with col2:
+    st.metric(
+        label="MAPE",
+        value="5.31%",
+        delta="-69% vs baseline"
+    )
+
+with col3:
+    st.metric(
+        label="Active Projects",
+        value="1,199",
+        delta="+12"
+    )
+
+with col4:
+    st.metric(
+        label="Materials Tracked",
+        value="4 Types"
+    )
+
+st.markdown("---")
 
 # Load data
 @st.cache_data
