@@ -87,13 +87,37 @@ if st.session_state['authentication_status']:
     
     st.markdown("---")
     
+    # Quick Navigation Buttons - ADDED THIS SECTION
+    st.markdown("### ⚡ Quick Navigation")
+    st.markdown("Click any button below to access different modules:")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        if st.button("🏠 Dashboard", use_container_width=True, type="primary", help="View inventory overview and alerts"):
+            st.switch_page("pages/1_🏠_Dashboard.py")
+        
+        if st.button("📊 Demand Forecast", use_container_width=True, help="Generate real-time predictions"):
+            st.switch_page("pages/2_📊_Demand_Forecast.py")
+    
+    with col2:
+        if st.button("📦 Inventory Management", use_container_width=True, help="Track materials and stock levels"):
+            st.switch_page("pages/3_📦_Inventory_Management.py")
+        
+        if st.button("📑 Reports & Analytics", use_container_width=True, help="Generate comprehensive reports"):
+            st.switch_page("pages/4_📑_Reports_Analytics.py")
+    
+    with col3:
+        if st.button("⚙️ Settings", use_container_width=True, help="Customize your experience"):
+            st.switch_page("pages/5_⚙️_Settings.py")
+    
+    st.markdown("---")
+    
     st.info("""
-    👈 **Navigate using the sidebar to access:**
-    - 🏠 Dashboard - Overview of inventory and alerts
-    - 📊 Demand Forecast - Generate real-time predictions
-    - 📦 Inventory Management - Track materials and stock levels
-    - 📑 Reports & Analytics - Generate comprehensive reports
-    - ⚙️ Settings - Customize your experience
+    💡 **Navigation Tips:**
+    - Click the buttons above to quickly access different modules
+    - Or use the sidebar menu (☰) at the top left
+    - All pages are accessible after login
     """)
     
     # Quick stats
@@ -113,6 +137,36 @@ if st.session_state['authentication_status']:
         st.write("**Total Predictions:** 15,847")
         st.write("**Average Response Time:** < 100ms")
         st.write(f"**Logged in as:** {st.session_state['name']}")
+    
+    # Feature Highlights
+    st.markdown("---")
+    st.markdown("### 🌟 Key Features")
+    
+    feat_col1, feat_col2, feat_col3, feat_col4 = st.columns(4)
+    
+    with feat_col1:
+        st.markdown("#### 🎯 Forecasting")
+        st.write("5.31% MAPE accuracy")
+        st.write("Real-time predictions")
+        st.write("12-month horizon")
+    
+    with feat_col2:
+        st.markdown("#### 📦 Inventory")
+        st.write("Stock tracking")
+        st.write("Reorder alerts")
+        st.write("Supplier management")
+    
+    with feat_col3:
+        st.markdown("#### 📊 Analytics")
+        st.write("Cost analysis")
+        st.write("Demand trends")
+        st.write("Custom reports")
+    
+    with feat_col4:
+        st.markdown("#### 🔔 Alerts")
+        st.write("Low stock warnings")
+        st.write("Price changes")
+        st.write("Lead time updates")
 
 else:
     # Not logged in - show login prompt
