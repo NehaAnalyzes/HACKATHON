@@ -13,12 +13,7 @@ if 'authentication_status' not in st.session_state or not st.session_state['auth
 st.title("📊 Dynamic Demand Forecasting")
 st.markdown("### Generate real-time material demand predictions with Prophet AI")
 
-# Model Performance Banner
-col1, col2, col3, col4 = st.columns(4)
-col1.metric("Model MAPE", "5.31%", "69% better")
-col2.metric("R² Score", "0.9471", "+94.71%")
-col3.metric("Avg Error", "78.72 units", "4.9%")
-col4.metric("Training Time", "0.62 sec", "Real-time")
+
 
 st.markdown("---")
 
