@@ -1,11 +1,16 @@
 prophet==1.1.5
-cmdstanpy==1.2.4
-pystan==2.19.1.1
-numpy==1.26.4
+cmdstanpy==1.3.0
+
+streamlit==1.51.0
 pandas==2.2.3
-plotly==5.24.1
-streamlit==1.39.0
-scikit-learn==1.5.2
+numpy==1.26.4
+plotly==6.4.0
+scikit-learn==1.7.2
+
+# any other libs you already use
+streamlit-authenticator==0.4.2
+bcrypt==5.0.0
+extra-streamlit-components==0.1.81
 
 
 
