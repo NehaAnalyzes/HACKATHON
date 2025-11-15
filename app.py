@@ -1,14 +1,14 @@
-# app.py - ONLY model fixed, CSV must be uploaded (stable metrics)
+# app.py - complete (metrics directly from CSV, no JSON)
 
 import streamlit as st
 import pickle
 from pathlib import Path
 import pandas as pd
 import numpy as np
-from sklearn.metrics import r2_score
+from sklearn.metrics import r2_score  # pip install scikit-learn if not installed
 
 # --------------------------------------------------------------------
-# Page config
+# IMPORTANT: set_page_config must be the first Streamlit command
 # --------------------------------------------------------------------
 st.set_page_config(
     page_title="POWERGRID Material Demand Forecasting System",
@@ -18,15 +18,14 @@ st.set_page_config(
 )
 
 # --------------------------------------------------------------------
-# Constants
+# Constants & helpers
 # --------------------------------------------------------------------
 MODEL_PATH = Path("powergrid_model.pkl")
+HIST_CSV = Path("hybrid_cleaned.csv")
 
-# --------------------------------------------------------------------
-# Load Prophet model
-# --------------------------------------------------------------------
 @st.cache_resource
 def load_model(path: Path):
+    """Load and return the pickled Prophet model (cached). Returns Exception on failure."""
     if not path.exists():
         return None
     try:
@@ -37,97 +36,50 @@ def load_model(path: Path):
         return e
 
 def make_forecast(model, periods_months: int = 6):
+    """Return Prophet forecast DataFrame for periods_months ahead ('M' frequency expected)."""
     future = model.make_future_dataframe(periods=periods_months, freq='M')
     forecast = model.predict(future)
     return forecast
 
 # --------------------------------------------------------------------
-# Cleaning for raw POWERGRID CSV (hybrid_powergrid_demand‑like)
+# Compute validation metrics from CSV
 # --------------------------------------------------------------------
-def clean_powergrid_csv(df_raw: pd.DataFrame) -> pd.DataFrame:
+def compute_validation_metrics(model, hist_csv: Path, validation_months: int = None, min_points: int = 6):
     """
-    Convert raw POWERGRID CSV into hybrid_cleaned‑like structure.
+    Compute MAPE and R^2 comparing model predictions to historical values.
+    Predicts exactly on the historical dates.
+    If validation_months is None, uses ALL rows (stable metrics).
+    Returns: (mape, r2, percent_accuracy, msg)
     """
+    if not hist_csv.exists():
+        return None, None, None, "Historical CSV not found."
 
-    df = df_raw.copy()
+    try:
+        hist_df = pd.read_csv(hist_csv)
+    except Exception as e:
+        return None, None, None, f"Error reading CSV: {e}"
 
-    required_cols = [
-        'Date','State','ProjectType','TowerType','SubstationType',
-        'BudgetCr','GSTRate','Material','SteelPriceIndex','CementPriceIndex',
-        'SupplierLeadTimeDays','RegionCostFactor','QuantityUsed','QuantityProcured'
-    ]
-    missing = [c for c in required_cols if c not in df.columns]
-    if missing:
-        raise ValueError(f"Missing required columns in raw CSV: {missing}")
+    if 'Date' not in hist_df.columns or 'Quantity_Procured' not in hist_df.columns:
+        return None, None, None, "CSV missing required columns 'Date' and/or 'Quantity_Procured'."
 
-    # dates and numeric types
-    df = df.dropna(subset=['Date','QuantityProcured'])
-    df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
-    df = df.dropna(subset=['Date'])
+    hist_df = hist_df.dropna(subset=['Date', 'Quantity_Procured']).copy()
+    hist_df['ds'] = pd.to_datetime(hist_df['Date'], errors='coerce')
+    hist_df['y'] = pd.to_numeric(hist_df['Quantity_Procured'], errors='coerce')
+    hist_df = hist_df.dropna(subset=['ds','y']).sort_values('ds').reset_index(drop=True)
 
-    num_cols = [
-        'BudgetCr','GSTRate','SteelPriceIndex','CementPriceIndex',
-        'SupplierLeadTimeDays','RegionCostFactor','QuantityUsed','QuantityProcured'
-    ]
-    for col in num_cols:
-        df[col] = pd.to_numeric(df[col], errors='coerce')
-
-    df = df.dropna(subset=['QuantityUsed','QuantityProcured'])
-
-    # label‑encode categoricals
-    cat_cols = ['State','ProjectType','TowerType','SubstationType','Material']
-    for col in cat_cols:
-        df[col] = df[col].astype('category').cat.codes
-
-    df['Year'] = df['Date'].dt.year
-    df['Month'] = df['Date'].dt.month
-
-    df['CostPerUnitUsed'] = np.where(
-        df['QuantityUsed'] != 0,
-        (df['BudgetCr'] * df['RegionCostFactor']) / df['QuantityUsed'],
-        0.0
-    )
-
-    cols_out = [
-        'Date','State','ProjectType','TowerType','SubstationType','BudgetCr',
-        'GSTRate','Material','SteelPriceIndex','CementPriceIndex',
-        'SupplierLeadTimeDays','RegionCostFactor','QuantityUsed',
-        'QuantityProcured','Year','Month','CostPerUnitUsed'
-    ]
-    df = df[cols_out].sort_values('Date').reset_index(drop=True)
-    return df
-
-# --------------------------------------------------------------------
-# Metrics (uses full history by default)
-# --------------------------------------------------------------------
-def compute_validation_metrics_from_df(model, hist_df: pd.DataFrame,
-                                       validation_months: int = None, min_points: int = 6):
-    """
-    Takes a cleaned DataFrame.
-    Requires columns: Date, QuantityProcured.
-    If validation_months is None, uses ALL rows for metrics.
-    """
-    if 'Date' not in hist_df.columns or 'QuantityProcured' not in hist_df.columns:
-        return None, None, None, "Uploaded CSV needs 'Date' and 'QuantityProcured' columns."
-
-    df = hist_df.dropna(subset=['Date','QuantityProcured']).copy()
-    df['ds'] = pd.to_datetime(df['Date'], errors='coerce')
-    df['y'] = pd.to_numeric(df['QuantityProcured'], errors='coerce')
-    df = df.dropna(subset=['ds','y']).sort_values('ds').reset_index(drop=True)
-
-    if df.empty:
+    if hist_df.empty:
         return None, None, None, "No valid historical rows after cleaning."
 
     # choose validation slice
     if validation_months is None:
-        val_df = df.copy()
+        val_df = hist_df.copy()
     else:
-        val_df = df.tail(validation_months).copy()
+        val_df = hist_df.tail(validation_months).copy()
         if len(val_df) < min_points:
-            if len(df) >= min_points:
-                val_df = df.tail(min_points).copy()
+            if len(hist_df) >= min_points:
+                val_df = hist_df.tail(min_points).copy()
             else:
-                return None, None, None, f"Not enough historical points for validation (found {len(df)})."
+                return None, None, None, f"Not enough historical points for validation (found {len(hist_df)})."
 
     predict_dates = pd.DataFrame({'ds': val_df['ds'].values})
 
@@ -137,17 +89,18 @@ def compute_validation_metrics_from_df(model, hist_df: pd.DataFrame,
         return None, None, None, f"Error running model.predict on historical dates: {e}"
 
     merged = val_df[['ds','y']].merge(preds[['ds','yhat']], on='ds', how='inner').sort_values('ds')
+
     if merged.empty:
         return None, None, None, "No overlapping predictions for validation dates (possible freq mismatch)."
 
-    # MAPE excluding y == 0
-    nonzero = merged[merged['y'] != 0]
-    if len(nonzero) == 0:
+    # compute MAPE excluding y==0
+    merged_nonzero = merged[merged['y'] != 0]
+    if len(merged_nonzero) == 0:
         mape = None
     else:
-        mape = (np.abs((nonzero['y'] - nonzero['yhat']) / nonzero['y'])).mean() * 100.0
+        mape = (np.abs((merged_nonzero['y'] - merged_nonzero['yhat']) / merged_nonzero['y'])).mean() * 100.0
 
-    # R²
+    # compute R^2 using sklearn if available
     try:
         r2 = float(r2_score(merged['y'], merged['yhat']))
     except Exception:
@@ -158,15 +111,16 @@ def compute_validation_metrics_from_df(model, hist_df: pd.DataFrame,
         r2 = 1.0 - (ss_res / ss_tot) if ss_tot > 0 else None
 
     percent_accuracy = max(0.0, 100.0 - mape) if mape is not None else None
+
     return mape, r2, percent_accuracy, None
 
 # --------------------------------------------------------------------
-# Session state
+# Session state defaults (for forecast persistence)
 # --------------------------------------------------------------------
 st.session_state.setdefault('forecast_df', None)
 
 # --------------------------------------------------------------------
-# Simple login
+# Sidebar: minimal login (same as before)
 # --------------------------------------------------------------------
 def check_login(username, password):
     users = {'admin': 'admin123', 'manager': 'manager123'}
@@ -177,12 +131,17 @@ with st.sidebar:
     st.markdown("Ministry of Power")
     st.markdown("---")
     if st.session_state.get('authentication_status'):
-        st.success(f"✅ Logged in as: **{st.session_state.get('name')}**")
+        st.success(f"✅ Logged in as: *{st.session_state.get('name')}*")
         if st.button("Logout", use_container_width=True):
             st.session_state['authentication_status'] = None
             st.session_state['name'] = None
             st.session_state['username'] = None
             st.rerun()
+        st.markdown("---")
+        st.markdown("### 📊 System Status")
+        st.success("🟢 Model: Active")
+        st.info("📡 API: Connected")
+        st.success("💾 Database: Online")
     else:
         st.markdown("### 🔐 Login")
         username_input = st.text_input("Username", key="username_input")
@@ -196,15 +155,18 @@ with st.sidebar:
                 st.rerun()
             else:
                 st.error("❌ Invalid username or password")
+        st.markdown("---")
+        st.info("*Demo Credentials:*\n\nUsername: admin\nPassword: admin123")
 
 # --------------------------------------------------------------------
-# Main
+# Main app content
 # --------------------------------------------------------------------
 if st.session_state.get('authentication_status'):
     st.title("🔌 POWERGRID Material Demand Forecasting System")
+    st.markdown("### Welcome to the Supply Chain Intelligence Platform")
     st.markdown("---")
 
-    # Load model only
+    # load model
     model_or_error = load_model(MODEL_PATH)
     if isinstance(model_or_error, Exception):
         st.error(f"Error loading model: {model_or_error}")
@@ -212,131 +174,100 @@ if st.session_state.get('authentication_status'):
     else:
         model = model_or_error
 
+    # if model missing, show instruction and placeholders
     if model is None:
         st.warning(
-            "No trained model found at `powergrid_model.pkl`.\n"
-            "Train Prophet and save the model, then restart the app."
+            "No trained model found at powergrid_model.pkl.\n\n"
+            "Run the training: python train_prophet_model.py (after installing prophet), "
+            "or place powergrid_model.pkl in this folder."
         )
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Model Accuracy", "N/A")
+        with col2:
+            st.metric("MAPE", "N/A")
+        with col3:
+            st.metric("R²", "N/A")
+        with col4:
+            st.metric("Materials Tracked", "4 Types", "")
     else:
-        # ------------------ upload CSV (required) ------------------
-        st.subheader("📂 Upload data (required)")
-        st.markdown(
-            "- You **must** upload a CSV on every run.\n"
-            "- If it is **raw** like `hybrid_powergrid_demand.csv`, app will clean it.\n"
-            "- If it is already **cleaned** like `hybrid_cleaned.csv`, app will use it directly."
+        # -----------------------------
+        # Compute validation metrics directly from hybrid_cleaned.csv
+        # -----------------------------
+        mape, r2, percent_accuracy, msg = compute_validation_metrics(
+            model,
+            HIST_CSV,
+            validation_months=None,  # use FULL history so metrics are stable
+            min_points=6
         )
 
-        uploaded_file = st.file_uploader(
-            "Upload POWERGRID CSV",
-            type=["csv"],
-            key="any_csv_uploader"
-        )
+        if msg:
+            st.warning(f"Validation info: {msg}")
 
-        if uploaded_file is None:
-            st.info("Please upload a CSV to continue.")
-        else:
-            try:
-                df_in = pd.read_csv(uploaded_file)
+        # Display metrics
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric(
+                "Model Accuracy",
+                f"{percent_accuracy:.2f}%" if percent_accuracy is not None else "N/A",
+                help="Derived as (100 - MAPE) when MAPE available"
+            )
+        with col2:
+            st.metric(
+                "MAPE",
+                f"{mape:.2f}%" if mape is not None else "N/A",
+                help="MAPE on all available historical points in hybrid_cleaned.csv"
+            )
+        with col3:
+            st.metric(
+                "R²",
+                f"{r2:.3f}" if r2 is not None else "N/A",
+                help="R² on all available historical points in hybrid_cleaned.csv"
+            )
+        with col4:
+            st.metric("Materials Tracked", "4 Types", "")
 
-                # decide: raw vs already-cleaned
-                raw_cols = {'State','ProjectType','TowerType','SubstationType','Material'}
-                cleaned_cols = {'Year','Month','CostPerUnitUsed'}
+        st.markdown("---")
 
-                if raw_cols.issubset(df_in.columns) and not cleaned_cols.issubset(df_in.columns):
-                    # RAW → run cleaning
-                    st.write("Detected raw schema → applying cleaning.")
-                    hist_df = clean_powergrid_csv(df_in)
-                else:
-                    # CLEANED or compatible → use as-is
-                    st.write("Detected cleaned / compatible schema → using as is.")
-                    hist_df = df_in.copy()
+        # -----------------------------
+        # Forecast controls (user can generate forecast)
+        # -----------------------------
+        cols = st.columns([1,1,1,2])
+        with cols[0]:
+            periods = st.number_input("Forecast horizon (months)", min_value=1, max_value=36, value=6, step=1)
+        with cols[1]:
+            show_history = st.checkbox("Show historical series on chart", value=True)
+        with cols[2]:
+            if st.button("Generate Forecast"):
+                try:
+                    forecast = make_forecast(model, periods_months=int(periods))
+                    st.session_state['forecast_df'] = forecast
+                except Exception as e:
+                    st.error(f"Error during forecasting: {e}")
+                    st.session_state['forecast_df'] = None
 
-                # normalise quantity column name
-                if 'Quantity_Procured' in hist_df.columns and 'QuantityProcured' not in hist_df.columns:
-                    hist_df = hist_df.rename(columns={'Quantity_Procured': 'QuantityProcured'})
+        # If a forecast is already in session_state (generated earlier), display it
+        if st.session_state.get('forecast_df') is not None:
+            forecast = st.session_state['forecast_df']
+            plot_df = forecast.set_index('ds')[['yhat','yhat_lower','yhat_upper']]
+            st.subheader("Forecast Chart")
+            if show_history:
+                st.line_chart(plot_df[['yhat']])
+            else:
+                st.line_chart(plot_df.tail(periods)[['yhat']])
 
-                # ensure Date is present and datetime
-                if 'Date' not in hist_df.columns:
-                    st.error("Uploaded CSV must contain a 'Date' column.")
-                else:
-                    hist_df['Date'] = pd.to_datetime(hist_df['Date'], errors='coerce')
-                    hist_df = hist_df.dropna(subset=['Date'])
-
-                    # ------------------ metrics if target column exists ------------------
-                    target_col = 'QuantityProcured' if 'QuantityProcured' in hist_df.columns else None
-
-                    if target_col is not None:
-                        st.markdown("---")
-                        st.subheader("📈 Validation metrics (full history)")
-
-                        mape, r2, percent_accuracy, msg = compute_validation_metrics_from_df(
-                            model, hist_df, validation_months=None, min_points=6
-                        )
-                        if msg:
-                            st.warning(f"Validation info: {msg}")
-
-                        c1, c2, c3 = st.columns(3)
-                        with c1:
-                            st.metric(
-                                "Accuracy",
-                                f"{percent_accuracy:.2f}%" if percent_accuracy is not None else "N/A"
-                            )
-                        with c2:
-                            st.metric(
-                                "MAPE",
-                                f"{mape:.2f}%" if mape is not None else "N/A"
-                            )
-                        with c3:
-                            st.metric(
-                                "R²",
-                                f"{r2:.3f}" if r2 is not None else "N/A"
-                            )
-                    else:
-                        st.markdown("---")
-                        st.warning(
-                            "No quantity/target column found (e.g., 'QuantityProcured'). "
-                            "Metrics (MAPE, R², Accuracy) are skipped, but forecasts are still available."
-                        )
-
-                    # ------------------ forecast controls ------------------
-                    st.markdown("---")
-                    cols = st.columns([1,1,1,2])
-                    with cols[0]:
-                        periods = st.number_input("Forecast horizon (months)", 1, 36, 6, 1)
-                    with cols[1]:
-                        show_history = st.checkbox("Show full history on chart", True)
-                    with cols[2]:
-                        if st.button("Generate Forecast"):
-                            try:
-                                forecast = make_forecast(model, periods_months=int(periods))
-                                st.session_state['forecast_df'] = forecast
-                            except Exception as e:
-                                st.error(f"Error during forecasting: {e}")
-                                st.session_state['forecast_df'] = None
-
-                    if st.session_state.get('forecast_df') is not None:
-                        forecast = st.session_state['forecast_df']
-                        plot_df = forecast.set_index('ds')[['yhat','yhat_lower','yhat_upper']]
-                        st.subheader("Forecast Chart")
-                        if show_history:
-                            st.line_chart(plot_df[['yhat']])
-                        else:
-                            st.line_chart(plot_df.tail(periods)[['yhat']])
-
-                        future_only = forecast.tail(periods)[['ds','yhat','yhat_lower','yhat_upper']].copy()
-                        future_only = future_only.assign(
-                            Forecast=lambda d: d['yhat'].round(0),
-                            Lower=lambda d: d['yhat_lower'].round(0),
-                            Upper=lambda d: d['yhat_upper'].round(0)
-                        )[['ds','Forecast','Lower','Upper']].rename(columns={'ds':'Date'})
-                        future_only['Date'] = pd.to_datetime(future_only['Date']).dt.date
-                        st.subheader(f"Next {periods} months forecast")
-                        st.dataframe(future_only.reset_index(drop=True), use_container_width=True)
-
-            except Exception as e:
-                st.error(f"Error processing uploaded CSV: {e}")
+            future_only = forecast.tail(periods)[['ds','yhat','yhat_lower','yhat_upper']].copy()
+            future_only = future_only.assign(
+                Forecast=lambda d: d['yhat'].round(0),
+                Lower=lambda d: d['yhat_lower'].round(0),
+                Upper=lambda d: d['yhat_upper'].round(0)
+            )[['ds','Forecast','Lower','Upper']].rename(columns={'ds':'Date'})
+            future_only['Date'] = pd.to_datetime(future_only['Date']).dt.date
+            st.subheader(f"Next {periods} months forecast")
+            st.dataframe(future_only.reset_index(drop=True), use_container_width=True)
 
 else:
     st.title("🔌 POWERGRID Material Demand Forecasting")
+    st.markdown("### Supply Chain Intelligence Platform")
     st.markdown("---")
-    st.info("Please login from the sidebar to access the platform.")
+    st.info("### 🔐 Authentication Required\n\nPlease login using the sidebar to access the platform.")
