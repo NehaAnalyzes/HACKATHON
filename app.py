@@ -103,7 +103,7 @@ def clean_powergrid_csv(df_raw: pd.DataFrame) -> pd.DataFrame:
 def compute_validation_metrics_from_df(model, hist_df: pd.DataFrame,
                                        validation_months: int = 6, min_points: int = 6):
     """
-    Same as before but takes a DataFrame directly (already cleaned).
+    Takes a cleaned DataFrame.
     Requires columns: Date, QuantityProcured
     """
     if 'Date' not in hist_df.columns or 'QuantityProcured' not in hist_df.columns:
@@ -159,7 +159,7 @@ def compute_validation_metrics_from_df(model, hist_df: pd.DataFrame,
 st.session_state.setdefault('forecast_df', None)
 
 # --------------------------------------------------------------------
-# Simple login (same as before)
+# Simple login
 # --------------------------------------------------------------------
 def check_login(username, password):
     users = {'admin': 'admin123', 'manager': 'manager123'}
@@ -236,77 +236,96 @@ if st.session_state.get('authentication_status'):
                 cleaned_cols = {'Year','Month','CostPerUnitUsed'}
 
                 if raw_cols.issubset(df_in.columns) and not cleaned_cols.issubset(df_in.columns):
+                    # RAW → run cleaning
                     st.write("Detected raw schema → applying cleaning.")
                     hist_df = clean_powergrid_csv(df_in)
                 else:
+                    # CLEANED or compatible → use as-is
                     st.write("Detected cleaned / compatible schema → using as is.")
                     hist_df = df_in.copy()
+
+                # ------------------ normalise column names ------------------
+                # handle Quantity_Procured vs QuantityProcured
+                if 'Quantity_Procured' in hist_df.columns and 'QuantityProcured' not in hist_df.columns:
+                    hist_df = hist_df.rename(columns={'Quantity_Procured': 'QuantityProcured'})
+
+                # ensure Date is present and datetime
+                if 'Date' not in hist_df.columns:
+                    st.error("Uploaded CSV must contain a 'Date' column.")
+                else:
                     hist_df['Date'] = pd.to_datetime(hist_df['Date'], errors='coerce')
                     hist_df = hist_df.dropna(subset=['Date'])
 
-                st.write("Preview of data used for metrics:")
-                st.dataframe(hist_df.head(), use_container_width=True)
+                    # ------------------ metrics if target column exists ------------------
+                    target_col = 'QuantityProcured' if 'QuantityProcured' in hist_df.columns else None
 
-                # ------------------ metrics ------------------
-                st.markdown("---")
-                st.subheader("📈 Validation metrics (last 6 points)")
-                mape, r2, percent_accuracy, msg = compute_validation_metrics_from_df(
-                    model, hist_df, validation_months=6, min_points=6
-                )
-                if msg:
-                    st.warning(f"Validation info: {msg}")
+                    if target_col is not None:
+                        st.markdown("---")
+                        st.subheader("📈 Validation metrics (last 6 points)")
 
-                c1, c2, c3 = st.columns(3)
-                with c1:
-                    st.metric(
-                        "Accuracy",
-                        f"{percent_accuracy:.2f}%" if percent_accuracy is not None else "N/A"
-                    )
-                with c2:
-                    st.metric(
-                        "MAPE",
-                        f"{mape:.2f}%" if mape is not None else "N/A"
-                    )
-                with c3:
-                    st.metric(
-                        "R²",
-                        f"{r2:.3f}" if r2 is not None else "N/A"
-                    )
+                        mape, r2, percent_accuracy, msg = compute_validation_metrics_from_df(
+                            model, hist_df, validation_months=6, min_points=6
+                        )
+                        if msg:
+                            st.warning(f"Validation info: {msg}")
 
-                # ------------------ forecast controls ------------------
-                st.markdown("---")
-                cols = st.columns([1,1,1,2])
-                with cols[0]:
-                    periods = st.number_input("Forecast horizon (months)", 1, 36, 6, 1)
-                with cols[1]:
-                    show_history = st.checkbox("Show full history on chart", True)
-                with cols[2]:
-                    if st.button("Generate Forecast"):
-                        try:
-                            forecast = make_forecast(model, periods_months=int(periods))
-                            st.session_state['forecast_df'] = forecast
-                        except Exception as e:
-                            st.error(f"Error during forecasting: {e}")
-                            st.session_state['forecast_df'] = None
-
-                if st.session_state.get('forecast_df') is not None:
-                    forecast = st.session_state['forecast_df']
-                    plot_df = forecast.set_index('ds')[['yhat','yhat_lower','yhat_upper']]
-                    st.subheader("Forecast Chart")
-                    if show_history:
-                        st.line_chart(plot_df[['yhat']])
+                        c1, c2, c3 = st.columns(3)
+                        with c1:
+                            st.metric(
+                                "Accuracy",
+                                f"{percent_accuracy:.2f}%" if percent_accuracy is not None else "N/A"
+                            )
+                        with c2:
+                            st.metric(
+                                "MAPE",
+                                f"{mape:.2f}%" if mape is not None else "N/A"
+                            )
+                        with c3:
+                            st.metric(
+                                "R²",
+                                f"{r2:.3f}" if r2 is not None else "N/A"
+                            )
                     else:
-                        st.line_chart(plot_df.tail(periods)[['yhat']])
+                        st.markdown("---")
+                        st.warning(
+                            "No quantity/target column found (e.g., 'QuantityProcured'). "
+                            "Metrics (MAPE, R², Accuracy) are skipped, but forecasts are still available."
+                        )
 
-                    future_only = forecast.tail(periods)[['ds','yhat','yhat_lower','yhat_upper']].copy()
-                    future_only = future_only.assign(
-                        Forecast=lambda d: d['yhat'].round(0),
-                        Lower=lambda d: d['yhat_lower'].round(0),
-                        Upper=lambda d: d['yhat_upper'].round(0)
-                    )[['ds','Forecast','Lower','Upper']].rename(columns={'ds':'Date'})
-                    future_only['Date'] = pd.to_datetime(future_only['Date']).dt.date
-                    st.subheader(f"Next {periods} months forecast")
-                    st.dataframe(future_only.reset_index(drop=True), use_container_width=True)
+                    # ------------------ forecast controls ------------------
+                    st.markdown("---")
+                    cols = st.columns([1,1,1,2])
+                    with cols[0]:
+                        periods = st.number_input("Forecast horizon (months)", 1, 36, 6, 1)
+                    with cols[1]:
+                        show_history = st.checkbox("Show full history on chart", True)
+                    with cols[2]:
+                        if st.button("Generate Forecast"):
+                            try:
+                                forecast = make_forecast(model, periods_months=int(periods))
+                                st.session_state['forecast_df'] = forecast
+                            except Exception as e:
+                                st.error(f"Error during forecasting: {e}")
+                                st.session_state['forecast_df'] = None
+
+                    if st.session_state.get('forecast_df') is not None:
+                        forecast = st.session_state['forecast_df']
+                        plot_df = forecast.set_index('ds')[['yhat','yhat_lower','yhat_upper']]
+                        st.subheader("Forecast Chart")
+                        if show_history:
+                            st.line_chart(plot_df[['yhat']])
+                        else:
+                            st.line_chart(plot_df.tail(periods)[['yhat']])
+
+                        future_only = forecast.tail(periods)[['ds','yhat','yhat_lower','yhat_upper']].copy()
+                        future_only = future_only.assign(
+                            Forecast=lambda d: d['yhat'].round(0),
+                            Lower=lambda d: d['yhat_lower'].round(0),
+                            Upper=lambda d: d['yhat_upper'].round(0)
+                        )[['ds','Forecast','Lower','Upper']].rename(columns={'ds':'Date'})
+                        future_only['Date'] = pd.to_datetime(future_only['Date']).dt.date
+                        st.subheader(f"Next {periods} months forecast")
+                        st.dataframe(future_only.reset_index(drop=True), use_container_width=True)
 
             except Exception as e:
                 st.error(f"Error processing uploaded CSV: {e}")
