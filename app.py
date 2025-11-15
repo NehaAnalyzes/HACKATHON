@@ -30,7 +30,7 @@ def preprocess_csv(df_raw: pd.DataFrame) -> pd.DataFrame:
     """Clean uploaded dataset and ensure Date / Quantity_Procured are usable."""
     df = df_raw.copy()
 
-    # Optional mappings (keep if your data has these)
+    # Optional mappings – keep if present in your data
     if "State" in df.columns and df["State"].dtype == "object":
         state_map = {
             "Assam": 0,
@@ -56,14 +56,14 @@ def preprocess_csv(df_raw: pd.DataFrame) -> pd.DataFrame:
     return df
 
 def to_monthly_prophet_frame(df: pd.DataFrame) -> pd.DataFrame:
-    """Aggregate daily data to monthly totals and build Prophet frame."""
+    """Aggregate daily data to month‑end totals and build Prophet frame."""
     df = df.copy()
     df["ds"] = pd.to_datetime(df["Date"], errors="coerce")
     df["y"] = pd.to_numeric(df["Quantity_Procured"], errors="coerce")
     df = df.dropna(subset=["ds", "y"]).sort_values("ds").reset_index(drop=True)
     df["ds"] = pd.to_datetime(df["ds"]).dt.tz_localize(None)
 
-    # 'M' is still accepted but deprecated; 'ME' is the month-end alias
+    # 'ME' = month end (replacement for deprecated 'M')
     df_m = df.set_index("ds").resample("ME")["y"].sum().reset_index()
     return df_m
 
@@ -302,9 +302,9 @@ if st.session_state["authentication_status"]:
         f["Lower_95"] = f["yhat_lower"].round(0).astype(int)
         f["Upper_95"] = f["yhat_upper"].round(0).astype(int)
 
-        width = (f["Upper_95"] - f["Lower_95"]).replace(0, np.nan)
+        width_interval = (f["Upper_95"] - f["Lower_95"]).replace(0, np.nan)
         f["Low"] = f["Lower_95"].astype(int)
-        f["Medium"] = (f["Lower_95"] + width * (2 / 3.0)).round(0).astype("Int64")
+        f["Medium"] = (f["Lower_95"] + width_interval * (2 / 3.0)).round(0).astype("Int64")
         f["High"] = f["Upper_95"].astype(int)
 
         st.markdown("#### 📊 Forecast table with confidence bands")
