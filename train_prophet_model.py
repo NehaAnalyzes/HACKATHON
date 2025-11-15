@@ -1,114 +1,183 @@
-"""
-POWERGRID Prophet Model Training Script
-Run this in VS Code with Python 3.11 to create powergrid_model.pkl
-"""
-
+# train_prophet_model.py (fixed: use resample to create ds column)
 import pandas as pd
 import numpy as np
 from prophet import Prophet
 import pickle
+from pathlib import Path
 from datetime import datetime
+import json
+from sklearn.metrics import r2_score
+import os
+import sys
 
-print("=" * 60)
-print("POWERGRID Prophet Model Training")
-print("=" * 60)
+# -------------- CONFIG --------------
+CSV_PATH = Path("hybrid_cleaned.csv")
+MODEL_OUT = Path("powergrid_model.pkl")
+METRICS_OUT = Path("model_metrics.json")
 
-# Step 1: Load Historical Data
-print("\n[1/4] Loading historical data...")
-try:
-    df = pd.read_csv('hybrid_cleaned.csv')
-    print(f"✅ Loaded {len(df)} records from hybrid_cleaned.csv")
-except FileNotFoundError:
-    print("❌ Error: hybrid_cleaned.csv not found!")
-    print("Make sure the file is in the same directory as this script.")
-    exit()
+# How many last months to reserve for test/validation
+TEST_MONTHS = 6
 
-# Step 2: Prepare Data for Prophet
-print("\n[2/4] Preparing data for Prophet...")
+# Use log(1 + y) transform? Try True if series skewed
+USE_LOG_TRANSFORM = False
 
-# Prophet requires columns named 'ds' (date) and 'y' (target value)
-prophet_data = pd.DataFrame({
-    'ds': pd.to_datetime(df['Date']),
-    'y': df['Quantity_Procured']
-})
+PROPHEt_PARAMS = {
+    "yearly_seasonality": True,
+    "weekly_seasonality": False,
+    "daily_seasonality": False,
+    "seasonality_mode": "multiplicative",
+    "changepoint_prior_scale": 0.05,
+    "interval_width": 0.95
+}
+MONTHLY_SEASONALITY = {"name": "monthly", "period": 30.5, "fourier_order": 5}
+# ------------------------------------
 
-# Remove any missing values
-prophet_data = prophet_data.dropna()
+def safe_mape(y_true, y_pred):
+    y_true = np.array(y_true, dtype=float)
+    y_pred = np.array(y_pred, dtype=float)
+    mask = y_true != 0
+    if mask.sum() == 0:
+        return None
+    return (np.abs((y_true[mask] - y_pred[mask]) / y_true[mask])).mean() * 100.0
 
-print(f"✅ Prepared {len(prophet_data)} data points")
-print(f"   Date range: {prophet_data['ds'].min()} to {prophet_data['ds'].max()}")
-print(f"   Avg demand: {prophet_data['y'].mean():.2f} units")
+def main():
+    print("="*60)
+    print("POWERGRID Prophet Model Training (fixed: monthly aggregation via resample)")
+    print("="*60)
 
-# Step 3: Train Prophet Model
-print("\n[3/4] Training Prophet model...")
-print("   This may take 30-60 seconds...")
+    if not CSV_PATH.exists():
+        print(f"❌ Error: {CSV_PATH} not found.")
+        sys.exit(1)
 
-# Initialize Prophet with optimized settings
-model = Prophet(
-    yearly_seasonality=True,      # Capture yearly patterns
-    weekly_seasonality=False,      # Not relevant for monthly data
-    daily_seasonality=False,       # Not relevant for monthly data
-    seasonality_mode='multiplicative',  # Better for percentage changes
-    changepoint_prior_scale=0.05,  # Moderate flexibility for trend changes
-    interval_width=0.95            # 95% confidence intervals
-)
+    df = pd.read_csv(CSV_PATH)
+    if 'Date' not in df.columns or 'Quantity_Procured' not in df.columns:
+        print("❌ CSV must contain 'Date' and 'Quantity_Procured' columns.")
+        print(f"Found columns: {df.columns.tolist()}")
+        sys.exit(1)
 
-# Add monthly seasonality (important for material demand)
-model.add_seasonality(
-    name='monthly',
-    period=30.5,
-    fourier_order=5
-)
+    # --- Prepare and aggregate to monthly totals ---
+    df = df.dropna(subset=['Date', 'Quantity_Procured']).copy()
+    # parse dates
+    df['ds'] = pd.to_datetime(df['Date'], errors='coerce')
+    df['y'] = pd.to_numeric(df['Quantity_Procured'], errors='coerce')
+    df = df.dropna(subset=['ds','y']).sort_values('ds').reset_index(drop=True)
 
-# Fit the model
-start_time = datetime.now()
-model.fit(prophet_data)
-training_time = (datetime.now() - start_time).total_seconds()
+    # Ensure ds is timezone-naive datetime (Prophet likes that)
+    df['ds'] = pd.to_datetime(df['ds']).dt.tz_localize(None)
 
-print(f"✅ Model trained successfully in {training_time:.2f} seconds!")
+    # Aggregate by month (sum of Quantity_Procured per month) using resample
+    df_monthly = df.set_index('ds').resample('M')['y'].sum().reset_index()
+    if df_monthly.empty:
+        print("❌ No monthly aggregated data after processing.")
+        sys.exit(1)
 
-# Step 4: Save Model
-print("\n[4/4] Saving model...")
+    print(f"✅ Aggregated to {len(df_monthly)} monthly rows, range {df_monthly['ds'].min().date()} -> {df_monthly['ds'].max().date()}")
 
-try:
-    # Save with protocol 4 for Python 3.11 compatibility
-    with open('powergrid_model.pkl', 'wb') as f:
-        pickle.dump(model, f, protocol=4)
-    
-    print("✅ Model saved as 'powergrid_model.pkl'")
-    
-    # Get file size
-    import os
-    file_size = os.path.getsize('powergrid_model.pkl') / (1024 * 1024)  # Convert to MB
-    print(f"   File size: {file_size:.2f} MB")
-    
-except Exception as e:
-    print(f"❌ Error saving model: {str(e)}")
-    exit()
+    # Train-test split (chronological)
+    if len(df_monthly) <= TEST_MONTHS + 3:
+        print("⚠️ Not enough monthly rows for test split — using all for training.")
+        train_df = df_monthly.copy()
+        test_df = pd.DataFrame(columns=df_monthly.columns)
+    else:
+        train_df = df_monthly.iloc[:-TEST_MONTHS].copy()
+        test_df = df_monthly.iloc[-TEST_MONTHS:].copy()
 
-# Step 5: Quick Validation Test
-print("\n[5/5] Validating model...")
+    print(f"Training months: {len(train_df)}, Test months: {len(test_df)}")
 
-# Make a test prediction
-future = model.make_future_dataframe(periods=6, freq='M')
-forecast = model.predict(future)
+    # Optional log transform
+    used_transform = False
+    if USE_LOG_TRANSFORM:
+        used_transform = True
+        train_df['y'] = np.log1p(train_df['y'])
 
-# Get last 6 predictions
-test_forecast = forecast.tail(6)
+    # Fit Prophet
+    model = Prophet(**PROPHEt_PARAMS)
+    model.add_seasonality(**MONTHLY_SEASONALITY)
 
-print("✅ Model validation successful!")
-print("\nTest forecast (next 6 months):")
-print("-" * 60)
-for idx, row in test_forecast.iterrows():
-    print(f"   {row['ds'].strftime('%Y-%m-%d')}: {row['yhat']:.0f} units "
-          f"({row['yhat_lower']:.0f} - {row['yhat_upper']:.0f})")
+    print("\n[Training] Fitting Prophet model...")
+    t0 = datetime.now()
+    model.fit(train_df[['ds','y']])
+    t_elapsed = (datetime.now() - t0).total_seconds()
+    print(f"✅ Model trained in {t_elapsed:.2f}s")
 
-print("\n" + "=" * 60)
-print("✅ MODEL TRAINING COMPLETE!")
-print("=" * 60)
-print("\nNext steps:")
-print("1. Upload 'powergrid_model.pkl' to your GitHub repository")
-print("2. Make sure 'runtime.txt' contains: python-3.11")
-print("3. Push changes to GitHub")
-print("4. Wait for Streamlit to redeploy")
-print("\nYour Prophet model is ready to use! 🚀")
+    # Save model
+    try:
+        with open(MODEL_OUT, "wb") as f:
+            pickle.dump(model, f, protocol=4)
+        print(f"✅ Saved model to {MODEL_OUT}")
+    except Exception as e:
+        print(f"❌ Error saving model: {e}")
+
+    # Evaluate on test set if any
+    mape_val = None
+    r2_val = None
+    percent_accuracy = None
+    test_msg = None
+
+    if len(test_df) > 0:
+        predict_dates = pd.DataFrame({'ds': test_df['ds'].values})
+        print("\n[Evaluation] Predicting on test months...")
+        try:
+            preds = model.predict(predict_dates[['ds']])
+            y_true = test_df['y'].values
+            y_pred = preds['yhat'].values
+            if used_transform:
+                y_pred = np.expm1(y_pred)
+
+            mape_val = safe_mape(y_true, y_pred)
+            try:
+                r2_val = float(r2_score(y_true, y_pred))
+            except Exception:
+                ss_res = np.sum((y_true - y_pred)**2)
+                ss_tot = np.sum((y_true - np.mean(y_true))**2)
+                r2_val = 1.0 - (ss_res/ss_tot) if ss_tot>0 else None
+
+            if mape_val is not None:
+                percent_accuracy = max(0.0, 100.0 - mape_val)
+
+            print(f"Test MAPE: {mape_val:.2f}%") if mape_val is not None else print("MAPE: N/A")
+            print(f"Test R²: {r2_val:.4f}") if r2_val is not None else print("R²: N/A")
+
+        except Exception as e:
+            test_msg = f"Error predicting on test months: {e}"
+            print("❌", test_msg)
+    else:
+        print("⚠️ No test months available. Skipping evaluation.")
+
+    # Save metrics JSON
+    metrics = {
+        "timestamp": datetime.now().isoformat(),
+        "train_end": train_df['ds'].max().isoformat() if len(train_df)>0 else None,
+        "test_start": test_df['ds'].min().isoformat() if len(test_df)>0 else None,
+        "test_end": test_df['ds'].max().isoformat() if len(test_df)>0 else None,
+        "num_train": int(len(train_df)),
+        "num_test": int(len(test_df)),
+        "mape": float(mape_val) if mape_val is not None else None,
+        "r2": float(r2_val) if r2_val is not None else None,
+        "percent_accuracy": float(percent_accuracy) if percent_accuracy is not None else None,
+        "used_transform_log1p": bool(used_transform),
+        "prophet_params": PROPHEt_PARAMS,
+        "monthly_seasonality": MONTHLY_SEASONALITY,
+        "note": test_msg
+    }
+    try:
+        with open(METRICS_OUT, "w") as f:
+            json.dump(metrics, f, indent=2)
+        print(f"✅ Saved metrics to {METRICS_OUT}")
+    except Exception as e:
+        print(f"❌ Error saving metrics: {e}")
+
+    # Optional display of predictions vs actuals
+    if len(test_df) > 0:
+        display_df = predict_dates.copy()
+        display_df['pred'] = preds['yhat'].values
+        if used_transform:
+            display_df['pred'] = np.expm1(display_df['pred'])
+        display_df['actual'] = test_df['y'].values
+        print("\nTest preds (date, actual, pred):")
+        print(display_df.to_string(index=False))
+
+    print("\nDone.")
+
+if __name__ == "__main__":
+    main()

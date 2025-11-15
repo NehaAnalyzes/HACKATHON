@@ -1,0 +1,26 @@
+{
+  "timestamp": "2025-11-15T16:27:51.912913",
+  "train_end": "2024-06-30T00:00:00",
+  "test_start": "2024-07-31T00:00:00",
+  "test_end": "2024-12-31T00:00:00",
+  "num_train": 54,
+  "num_test": 6,
+  "mape": 8.807449634451904,
+  "r2": 0.4551600466856278,
+  "percent_accuracy": 91.1925503655481,
+  "used_transform_log1p": false,
+  "prophet_params": {
+    "yearly_seasonality": true,
+    "weekly_seasonality": false,
+    "daily_seasonality": false,
+    "seasonality_mode": "multiplicative",
+    "changepoint_prior_scale": 0.05,
+    "interval_width": 0.95
+  },
+  "monthly_seasonality": {
+    "name": "monthly",
+    "period": 30.5,
+    "fourier_order": 5
+  },
+  "note": null
+}
