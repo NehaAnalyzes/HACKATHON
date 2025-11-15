@@ -1,4 +1,4 @@
-# app.py - ONLY model fixed, CSV must be uploaded
+# app.py - ONLY model fixed, CSV must be uploaded (stable metrics)
 
 import streamlit as st
 import pickle
@@ -98,13 +98,14 @@ def clean_powergrid_csv(df_raw: pd.DataFrame) -> pd.DataFrame:
     return df
 
 # --------------------------------------------------------------------
-# Metrics
+# Metrics (uses full history by default)
 # --------------------------------------------------------------------
 def compute_validation_metrics_from_df(model, hist_df: pd.DataFrame,
-                                       validation_months: int = 6, min_points: int = 6):
+                                       validation_months: int = None, min_points: int = 6):
     """
     Takes a cleaned DataFrame.
-    Requires columns: Date, QuantityProcured
+    Requires columns: Date, QuantityProcured.
+    If validation_months is None, uses ALL rows for metrics.
     """
     if 'Date' not in hist_df.columns or 'QuantityProcured' not in hist_df.columns:
         return None, None, None, "Uploaded CSV needs 'Date' and 'QuantityProcured' columns."
@@ -117,12 +118,16 @@ def compute_validation_metrics_from_df(model, hist_df: pd.DataFrame,
     if df.empty:
         return None, None, None, "No valid historical rows after cleaning."
 
-    val_df = df.tail(validation_months).copy()
-    if len(val_df) < min_points:
-        if len(df) >= min_points:
-            val_df = df.tail(min_points).copy()
-        else:
-            return None, None, None, f"Not enough historical points for validation (found {len(df)})."
+    # choose validation slice
+    if validation_months is None:
+        val_df = df.copy()
+    else:
+        val_df = df.tail(validation_months).copy()
+        if len(val_df) < min_points:
+            if len(df) >= min_points:
+                val_df = df.tail(min_points).copy()
+            else:
+                return None, None, None, f"Not enough historical points for validation (found {len(df)})."
 
     predict_dates = pd.DataFrame({'ds': val_df['ds'].values})
 
@@ -135,12 +140,14 @@ def compute_validation_metrics_from_df(model, hist_df: pd.DataFrame,
     if merged.empty:
         return None, None, None, "No overlapping predictions for validation dates (possible freq mismatch)."
 
+    # MAPE excluding y == 0
     nonzero = merged[merged['y'] != 0]
     if len(nonzero) == 0:
         mape = None
     else:
         mape = (np.abs((nonzero['y'] - nonzero['yhat']) / nonzero['y'])).mean() * 100.0
 
+    # R²
     try:
         r2 = float(r2_score(merged['y'], merged['yhat']))
     except Exception:
@@ -244,8 +251,7 @@ if st.session_state.get('authentication_status'):
                     st.write("Detected cleaned / compatible schema → using as is.")
                     hist_df = df_in.copy()
 
-                # ------------------ normalise column names ------------------
-                # handle Quantity_Procured vs QuantityProcured
+                # normalise quantity column name
                 if 'Quantity_Procured' in hist_df.columns and 'QuantityProcured' not in hist_df.columns:
                     hist_df = hist_df.rename(columns={'Quantity_Procured': 'QuantityProcured'})
 
@@ -261,10 +267,10 @@ if st.session_state.get('authentication_status'):
 
                     if target_col is not None:
                         st.markdown("---")
-                        st.subheader("📈 Validation metrics (last 6 points)")
+                        st.subheader("📈 Validation metrics (full history)")
 
                         mape, r2, percent_accuracy, msg = compute_validation_metrics_from_df(
-                            model, hist_df, validation_months=6, min_points=6
+                            model, hist_df, validation_months=None, min_points=6
                         )
                         if msg:
                             st.warning(f"Validation info: {msg}")
