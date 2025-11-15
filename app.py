@@ -1,14 +1,12 @@
 # app.py – POWERGRID Prophet dashboard (train on upload)
 
 import streamlit as st
-from pathlib import Path
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from prophet import Prophet
 from sklearn.metrics import r2_score
 from datetime import datetime
-import cmdstanpy
 import warnings
 
 warnings.filterwarnings("ignore")
@@ -20,15 +18,6 @@ st.set_page_config(
     layout="wide",
 )
 
-# ========== INITIALIZE CMDSTAN BACKEND (ONCE PER SESSION) ==========
-if "cmdstan_init" not in st.session_state:
-    try:
-        # if CmdStan not installed yet, this call will fail and we install
-        _ = cmdstanpy.cmdstan_path()
-    except Exception:
-        cmdstanpy.install_cmdstan()
-    st.session_state["cmdstan_init"] = True
-
 # ========== SESSION STATE / AUTH ==========
 if "authentication_status" not in st.session_state:
     st.session_state["authentication_status"] = None
@@ -36,11 +25,12 @@ if "authentication_status" not in st.session_state:
 def check_login(u, p):
     return {"admin": "admin123", "manager": "manager123"}.get(u) == p
 
-# ========== HELPERS ==========
+# ========== HELPER FUNCTIONS ==========
 def preprocess_csv(df_raw: pd.DataFrame) -> pd.DataFrame:
     """Clean uploaded dataset and ensure Date / Quantity_Procured are usable."""
     df = df_raw.copy()
 
+    # Optional mappings (keep if your data has these)
     if "State" in df.columns and df["State"].dtype == "object":
         state_map = {
             "Assam": 0,
@@ -73,7 +63,8 @@ def to_monthly_prophet_frame(df: pd.DataFrame) -> pd.DataFrame:
     df = df.dropna(subset=["ds", "y"]).sort_values("ds").reset_index(drop=True)
     df["ds"] = pd.to_datetime(df["ds"]).dt.tz_localize(None)
 
-    df_m = df.set_index("ds").resample("M")["y"].sum().reset_index()
+    # 'M' is still accepted but deprecated; 'ME' is the month-end alias
+    df_m = df.set_index("ds").resample("ME")["y"].sum().reset_index()
     return df_m
 
 def safe_mape(y_true, y_pred):
@@ -93,7 +84,7 @@ with st.sidebar:
 
     if st.session_state["authentication_status"]:
         st.success(f"✅ **{st.session_state.get('name')}**")
-        if st.button("Logout", use_container_width=True):
+        if st.button("Logout", width="stretch"):
             st.session_state.clear()
             st.rerun()
         st.markdown("---")
@@ -105,7 +96,7 @@ with st.sidebar:
         username = st.text_input("Username")
         password = st.text_input("Password", type="password")
 
-        if st.button("Login", type="primary", use_container_width=True):
+        if st.button("Login", type="primary", width="stretch"):
             if check_login(username, password):
                 st.session_state["authentication_status"] = True
                 st.session_state["name"] = username.capitalize()
@@ -137,7 +128,7 @@ if st.session_state["authentication_status"]:
             st.info(f"**Rows:** {len(df_upload):,} | **Columns:** {len(df_upload.columns)}")
 
             st.markdown("#### 📊 Data preview")
-            st.dataframe(df_upload.head(15), use_container_width=True)
+            st.dataframe(df_upload.head(15), width="stretch")
 
             col1, col2, col3, col4 = st.columns(4)
             col1.metric("Total rows", f"{len(df_upload):,}")
@@ -155,7 +146,7 @@ if st.session_state["authentication_status"]:
             if st.button(
                 "🚀 Train Prophet on this dataset",
                 type="primary",
-                use_container_width=True,
+                width="stretch",
             ):
                 with st.spinner("Cleaning data and training Prophet (monthly)..."):
                     cleaned = preprocess_csv(df_upload)
@@ -172,7 +163,6 @@ if st.session_state["authentication_status"]:
                             train_df = monthly.copy()
                             test_df = pd.DataFrame(columns=monthly.columns)
 
-                        # use CmdStanPy backend implicitly (prophet>=1 uses it if present)
                         model = Prophet(
                             yearly_seasonality=True,
                             weekly_seasonality=False,
@@ -232,11 +222,11 @@ if st.session_state["authentication_status"]:
             if st.button(
                 "📈 Generate forecast",
                 type="primary",
-                use_container_width=True,
+                width="stretch",
             ):
                 with st.spinner("Generating forecast..."):
                     future = model.make_future_dataframe(
-                        periods=int(horizon), freq="M"
+                        periods=int(horizon), freq="ME"
                     )
                     forecast = model.predict(future)
                     st.session_state["forecast_df"] = forecast.tail(int(horizon))
@@ -302,7 +292,7 @@ if st.session_state["authentication_status"]:
                     template="plotly_white",
                     height=450,
                 )
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width="stretch")
 
     # ===== 3. FORECAST TABLE (LOW / MEDIUM / HIGH) =====
     if "forecast_df" in st.session_state:
@@ -312,7 +302,6 @@ if st.session_state["authentication_status"]:
         f["Lower_95"] = f["yhat_lower"].round(0).astype(int)
         f["Upper_95"] = f["yhat_upper"].round(0).astype(int)
 
-        # numeric bands within the 95% interval
         width = (f["Upper_95"] - f["Lower_95"]).replace(0, np.nan)
         f["Low"] = f["Lower_95"].astype(int)
         f["Medium"] = (f["Lower_95"] + width * (2 / 3.0)).round(0).astype("Int64")
@@ -320,7 +309,10 @@ if st.session_state["authentication_status"]:
 
         st.markdown("#### 📊 Forecast table with confidence bands")
         display_cols = ["Date", "Forecast", "Low", "Medium", "High"]
-        st.dataframe(f[display_cols].reset_index(drop=True), use_container_width=True)
+        st.dataframe(
+            f[display_cols].reset_index(drop=True),
+            width="stretch",
+        )
 
         csv_export = f[display_cols].to_csv(index=False)
         st.download_button(
@@ -328,7 +320,7 @@ if st.session_state["authentication_status"]:
             csv_export,
             f"prophet_forecast_{datetime.now():%Y%m%d_%H%M%S}.csv",
             "text/csv",
-            use_container_width=True,
+            width="stretch",
         )
 
     st.markdown("---")
