@@ -1,4 +1,5 @@
-# app.py – Train-on-upload Prophet version
+# app.py – POWERGRID Prophet dashboard (train on upload)
+
 import streamlit as st
 from pathlib import Path
 import pandas as pd
@@ -7,25 +8,37 @@ import plotly.graph_objects as go
 from prophet import Prophet
 from sklearn.metrics import r2_score
 from datetime import datetime
+import cmdstanpy
 import warnings
+
 warnings.filterwarnings("ignore")
 
+# ========== STREAMLIT CONFIG ==========
 st.set_page_config(
     page_title="POWERGRID Material Forecasting - Prophet AI",
     page_icon="🔌",
-    layout="wide"
+    layout="wide",
 )
 
-# ========== SESSION STATE ==========
+# ========== INITIALIZE CMDSTAN BACKEND (ONCE PER SESSION) ==========
+if "cmdstan_init" not in st.session_state:
+    try:
+        # if CmdStan not installed yet, this call will fail and we install
+        _ = cmdstanpy.cmdstan_path()
+    except Exception:
+        cmdstanpy.install_cmdstan()
+    st.session_state["cmdstan_init"] = True
+
+# ========== SESSION STATE / AUTH ==========
 if "authentication_status" not in st.session_state:
     st.session_state["authentication_status"] = None
 
 def check_login(u, p):
     return {"admin": "admin123", "manager": "manager123"}.get(u) == p
 
-# ========== HELPER FUNCTIONS ==========
+# ========== HELPERS ==========
 def preprocess_csv(df_raw: pd.DataFrame) -> pd.DataFrame:
-    """Clean uploaded data, map categories and sort by Date."""
+    """Clean uploaded dataset and ensure Date / Quantity_Procured are usable."""
     df = df_raw.copy()
 
     if "State" in df.columns and df["State"].dtype == "object":
@@ -42,24 +55,24 @@ def preprocess_csv(df_raw: pd.DataFrame) -> pd.DataFrame:
         material_map = {"Cable": 0, "Cement": 1, "Insulator": 2, "Steel": 3}
         df["Material"] = df["Material"].map(material_map)
 
-    df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+    df["Date"] = pd.to_datetime(df.get("Date"), errors="coerce")
     df["Quantity_Procured"] = pd.to_numeric(
-        df["Quantity_Procured"], errors="coerce"
+        df.get("Quantity_Procured"), errors="coerce"
     )
+
     df = df.dropna(subset=["Date", "Quantity_Procured"])
     df = df.drop_duplicates(subset=["Date"], keep="first")
     df = df.sort_values("Date").reset_index(drop=True)
     return df
 
 def to_monthly_prophet_frame(df: pd.DataFrame) -> pd.DataFrame:
-    """Convert cleaned daily data to monthly aggregated Prophet frame."""
+    """Aggregate daily data to monthly totals and build Prophet frame."""
     df = df.copy()
     df["ds"] = pd.to_datetime(df["Date"], errors="coerce")
     df["y"] = pd.to_numeric(df["Quantity_Procured"], errors="coerce")
     df = df.dropna(subset=["ds", "y"]).sort_values("ds").reset_index(drop=True)
     df["ds"] = pd.to_datetime(df["ds"]).dt.tz_localize(None)
 
-    # monthly total quantity
     df_m = df.set_index("ds").resample("M")["y"].sum().reset_index()
     return df_m
 
@@ -85,7 +98,7 @@ with st.sidebar:
             st.rerun()
         st.markdown("---")
         st.markdown("### 📊 System Status")
-        st.success("🟢 Ready to train")
+        st.success("🟢 Ready to train & forecast")
         st.info("📡 Upload → Train → Forecast")
     else:
         st.markdown("### 🔐 Login")
@@ -100,7 +113,7 @@ with st.sidebar:
             else:
                 st.error("❌ Invalid credentials")
         st.markdown("---")
-        st.info("**Demo:**  `admin` / `admin123`")
+        st.info("**Demo:** `admin` / `admin123`")
 
 # ========== MAIN APP ==========
 if st.session_state["authentication_status"]:
@@ -108,7 +121,7 @@ if st.session_state["authentication_status"]:
     st.markdown("### Prophet AI‑Powered Supply Chain Intelligence")
     st.markdown("---")
 
-    # ===== 1. UPLOAD + TRAIN =====
+    # ===== 1. UPLOAD & TRAIN =====
     st.markdown("### 📤 Upload Dataset & Train Prophet")
 
     uploaded = st.file_uploader(
@@ -126,13 +139,18 @@ if st.session_state["authentication_status"]:
             st.markdown("#### 📊 Data preview")
             st.dataframe(df_upload.head(15), use_container_width=True)
 
-            # quick stats
             col1, col2, col3, col4 = st.columns(4)
             col1.metric("Total rows", f"{len(df_upload):,}")
             col2.metric("Columns", len(df_upload.columns))
             if "Quantity_Procured" in df_upload.columns:
-                col3.metric("Avg demand", f"{df_upload['Quantity_Procured'].mean():.0f}")
-                col4.metric("Max demand", f"{df_upload['Quantity_Procured'].max():.0f}")
+                col3.metric(
+                    "Avg demand",
+                    f"{df_upload['Quantity_Procured'].mean():.0f}",
+                )
+                col4.metric(
+                    "Max demand",
+                    f"{df_upload['Quantity_Procured'].max():.0f}",
+                )
 
             if st.button(
                 "🚀 Train Prophet on this dataset",
@@ -146,7 +164,6 @@ if st.session_state["authentication_status"]:
                     if len(monthly) < 6:
                         st.error("❌ Not enough data after cleaning/aggregation.")
                     else:
-                        # chronological split
                         TEST_MONTHS = 6
                         if len(monthly) > TEST_MONTHS + 3:
                             train_df = monthly.iloc[:-TEST_MONTHS].copy()
@@ -155,7 +172,7 @@ if st.session_state["authentication_status"]:
                             train_df = monthly.copy()
                             test_df = pd.DataFrame(columns=monthly.columns)
 
-                        # fit Prophet
+                        # use CmdStanPy backend implicitly (prophet>=1 uses it if present)
                         model = Prophet(
                             yearly_seasonality=True,
                             weekly_seasonality=False,
@@ -169,7 +186,6 @@ if st.session_state["authentication_status"]:
                         )
                         model.fit(train_df[["ds", "y"]])
 
-                        # evaluate
                         mape_val, r2_val = None, None
                         if len(test_df) > 0:
                             preds = model.predict(test_df[["ds"]])
@@ -178,7 +194,6 @@ if st.session_state["authentication_status"]:
                             mape_val = safe_mape(y_true, y_pred)
                             r2_val = r2_score(y_true, y_pred)
 
-                        # save in session
                         st.session_state["model"] = model
                         st.session_state["monthly"] = monthly
                         st.session_state["mape"] = mape_val
@@ -190,7 +205,7 @@ if st.session_state["authentication_status"]:
 
     st.markdown("---")
 
-    # ===== 2. FORECAST (GRAPH + TABLE) =====
+    # ===== 2. FORECAST GRAPH =====
     st.markdown("### 🔮 Forecast")
 
     if "model" not in st.session_state:
@@ -231,10 +246,9 @@ if st.session_state["authentication_status"]:
             if "forecast_df" in st.session_state:
                 future_only = st.session_state["forecast_df"]
 
-                # ----- chart -----
                 fig = go.Figure()
 
-                # historical monthly demand
+                # historical monthly totals
                 fig.add_trace(
                     go.Scatter(
                         x=monthly["ds"],
@@ -245,7 +259,7 @@ if st.session_state["authentication_status"]:
                     )
                 )
 
-                # forecast central line
+                # forecast mean
                 fig.add_trace(
                     go.Scatter(
                         x=future_only["ds"],
@@ -281,7 +295,7 @@ if st.session_state["authentication_status"]:
                     )
 
                 fig.update_layout(
-                    title=f"Prophet monthly demand forecast – next {int(horizon)} months",
+                    title=f"Monthly demand forecast – next {int(horizon)} months",
                     xaxis_title="Date",
                     yaxis_title="Quantity (units)",
                     hovermode="x unified",
@@ -290,7 +304,7 @@ if st.session_state["authentication_status"]:
                 )
                 st.plotly_chart(fig, use_container_width=True)
 
-    # ===== 3. FORECAST TABLE WITH LOW / MEDIUM / HIGH =====
+    # ===== 3. FORECAST TABLE (LOW / MEDIUM / HIGH) =====
     if "forecast_df" in st.session_state:
         f = st.session_state["forecast_df"].copy()
         f["Date"] = pd.to_datetime(f["ds"]).dt.strftime("%Y-%m-%d")
@@ -298,13 +312,13 @@ if st.session_state["authentication_status"]:
         f["Lower_95"] = f["yhat_lower"].round(0).astype(int)
         f["Upper_95"] = f["yhat_upper"].round(0).astype(int)
 
-        # derive Low / Medium / High numeric bands inside the 95% interval
+        # numeric bands within the 95% interval
         width = (f["Upper_95"] - f["Lower_95"]).replace(0, np.nan)
         f["Low"] = f["Lower_95"].astype(int)
         f["Medium"] = (f["Lower_95"] + width * (2 / 3.0)).round(0).astype("Int64")
         f["High"] = f["Upper_95"].astype(int)
 
-        st.markdown("#### 📊 Forecast table (with confidence bands)")
+        st.markdown("#### 📊 Forecast table with confidence bands")
         display_cols = ["Date", "Forecast", "Low", "Medium", "High"]
         st.dataframe(f[display_cols].reset_index(drop=True), use_container_width=True)
 
@@ -340,7 +354,10 @@ else:
     st.title("🔌 POWERGRID Material Demand Forecasting")
     st.markdown("### Prophet AI‑Powered Supply Chain Intelligence")
     st.markdown("---")
-    st.info("### 🔐 Authentication required\n\nPlease login using the sidebar to access the forecasting system.")
+    st.info(
+        "### 🔐 Authentication required\n\n"
+        "Please login using the sidebar to access the forecasting system."
+    )
 
 st.markdown("---")
 st.caption(
