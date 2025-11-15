@@ -7,10 +7,6 @@ numpy==1.26.4
 plotly==6.4.0
 scikit-learn==1.7.2
 
-# any other libs you already use
 streamlit-authenticator==0.4.2
 bcrypt==5.0.0
 extra-streamlit-components==0.1.81
-
-
-
