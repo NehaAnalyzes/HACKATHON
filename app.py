@@ -1,357 +1,282 @@
-# app.py – POWERGRID Prophet dashboard (train on upload)
-
+# app.py - complete
 import streamlit as st
+import pickle
+from pathlib import Path
 import pandas as pd
 import numpy as np
-import plotly.graph_objects as go
-from prophet import Prophet
-from sklearn.metrics import r2_score
-from datetime import datetime
-import warnings
+from sklearn.metrics import r2_score  # pip install scikit-learn if not installed
+import json
 
-warnings.filterwarnings("ignore")
-
-# ========== STREAMLIT CONFIG ==========
+# --------------------------------------------------------------------
+# IMPORTANT: set_page_config must be the first Streamlit command
+# --------------------------------------------------------------------
 st.set_page_config(
-    page_title="POWERGRID Material Forecasting - Prophet AI",
+    page_title="POWERGRID Material Demand Forecasting System",
     page_icon="🔌",
     layout="wide",
+    initial_sidebar_state="expanded"
 )
 
-# ========== SESSION STATE / AUTH ==========
-if "authentication_status" not in st.session_state:
-    st.session_state["authentication_status"] = None
+# --------------------------------------------------------------------
+# Constants & helpers
+# --------------------------------------------------------------------
+MODEL_PATH = Path("powergrid_model.pkl")
+HIST_CSV = Path("hybrid_cleaned.csv")
 
-def check_login(u, p):
-    return {"admin": "admin123", "manager": "manager123"}.get(u) == p
-
-# ========== HELPER FUNCTIONS ==========
-def preprocess_csv(df_raw: pd.DataFrame) -> pd.DataFrame:
-    """Clean uploaded dataset and ensure Date / Quantity_Procured are usable."""
-    df = df_raw.copy()
-
-    # Optional mappings – keep if present in your data
-    if "State" in df.columns and df["State"].dtype == "object":
-        state_map = {
-            "Assam": 0,
-            "Gujarat": 1,
-            "Maharashtra": 2,
-            "Tamil Nadu": 3,
-            "Uttar Pradesh": 4,
-        }
-        df["State"] = df["State"].map(state_map)
-
-    if "Material" in df.columns and df["Material"].dtype == "object":
-        material_map = {"Cable": 0, "Cement": 1, "Insulator": 2, "Steel": 3}
-        df["Material"] = df["Material"].map(material_map)
-
-    df["Date"] = pd.to_datetime(df.get("Date"), errors="coerce")
-    df["Quantity_Procured"] = pd.to_numeric(
-        df.get("Quantity_Procured"), errors="coerce"
-    )
-
-    df = df.dropna(subset=["Date", "Quantity_Procured"])
-    df = df.drop_duplicates(subset=["Date"], keep="first")
-    df = df.sort_values("Date").reset_index(drop=True)
-    return df
-
-def to_monthly_prophet_frame(df: pd.DataFrame) -> pd.DataFrame:
-    """Aggregate daily data to month‑end totals and build Prophet frame."""
-    df = df.copy()
-    df["ds"] = pd.to_datetime(df["Date"], errors="coerce")
-    df["y"] = pd.to_numeric(df["Quantity_Procured"], errors="coerce")
-    df = df.dropna(subset=["ds", "y"]).sort_values("ds").reset_index(drop=True)
-    df["ds"] = pd.to_datetime(df["ds"]).dt.tz_localize(None)
-
-    # 'ME' = month end (replacement for deprecated 'M')
-    df_m = df.set_index("ds").resample("ME")["y"].sum().reset_index()
-    return df_m
-
-def safe_mape(y_true, y_pred):
-    y_true = np.array(y_true, dtype=float)
-    y_pred = np.array(y_pred, dtype=float)
-    mask = y_true != 0
-    if mask.sum() == 0:
+@st.cache_resource
+def load_model(path: Path):
+    """Load and return the pickled Prophet model (cached). Returns Exception on failure."""
+    if not path.exists():
         return None
-    return np.mean(np.abs((y_true[mask] - y_pred[mask]) / y_true[mask])) * 100.0
+    try:
+        with open(path, "rb") as f:
+            model = pickle.load(f)
+        return model
+    except Exception as e:
+        return e
 
-# ========== SIDEBAR ==========
+def make_forecast(model, periods_months: int = 6):
+    """Return Prophet forecast DataFrame for periods_months ahead ('M' frequency expected)."""
+    future = model.make_future_dataframe(periods=periods_months, freq='M')
+    forecast = model.predict(future)
+    return forecast
+
+# add near the top of app.py imports
+
+# replace previous compute_validation_metrics with this one
+def compute_validation_metrics(model, hist_csv: Path, validation_months: int = 6, min_points: int = 6):
+    """
+    Compute MAPE and R^2 comparing model predictions to historical values.
+    This version predicts exactly on the historical dates (avoids misalignment).
+    Returns: (mape, r2, percent_accuracy, msg)
+    """
+    if not hist_csv.exists():
+        return None, None, None, "Historical CSV not found."
+
+    try:
+        hist_df = pd.read_csv(hist_csv)
+    except Exception as e:
+        return None, None, None, f"Error reading CSV: {e}"
+
+    # required columns check
+    if 'Date' not in hist_df.columns or 'Quantity_Procured' not in hist_df.columns:
+        return None, None, None, "CSV missing required columns 'Date' and/or 'Quantity_Procured'."
+
+    # prepare historical data
+    hist_df = hist_df.dropna(subset=['Date', 'Quantity_Procured']).copy()
+    hist_df['ds'] = pd.to_datetime(hist_df['Date'])
+    hist_df['y'] = pd.to_numeric(hist_df['Quantity_Procured'], errors='coerce')
+    hist_df = hist_df.dropna(subset=['y']).sort_values('ds').reset_index(drop=True)
+
+    if hist_df.empty:
+        return None, None, None, "No valid historical rows after cleaning."
+
+    # take the last validation_months rows (if you want calendar months, ensure data is monthly)
+    # we use last N observed points as the validation window
+    val_df = hist_df.tail(validation_months).copy()
+    if len(val_df) < min_points:
+        # if not enough points, use all available (but warn)
+        if len(hist_df) >= min_points:
+            val_df = hist_df.tail(min_points).copy()
+        else:
+            return None, None, None, f"Not enough historical points for validation (found {len(hist_df)})."
+
+    # create a dataframe containing the exact ds dates we want predictions for
+    predict_dates = pd.DataFrame({'ds': val_df['ds'].values})
+
+    # predict at those dates
+    try:
+        preds = model.predict(predict_dates)
+    except Exception as e:
+        return None, None, None, f"Error running model.predict on historical dates: {e}"
+
+    # preds contains yhat aligned to predict_dates; merge to val_df
+    merged = val_df[['ds','y']].merge(preds[['ds','yhat']], on='ds', how='inner').sort_values('ds')
+
+    if merged.empty:
+        return None, None, None, "No overlapping predictions for validation dates (possible freq mismatch)."
+
+    # compute MAPE excluding y==0
+    merged_nonzero = merged[merged['y'] != 0]
+    if len(merged_nonzero) == 0:
+        mape = None
+    else:
+        mape = (np.abs((merged_nonzero['y'] - merged_nonzero['yhat']) / merged_nonzero['y'])).mean() * 100.0
+
+    # compute R^2 using sklearn if available
+    try:
+        r2 = float(r2_score(merged['y'], merged['yhat']))
+    except Exception:
+        # fallback manual
+        y_true = merged['y'].values
+        y_pred = merged['yhat'].values
+        ss_res = np.sum((y_true - y_pred) ** 2)
+        ss_tot = np.sum((y_true - np.mean(y_true)) ** 2)
+        r2 = 1.0 - (ss_res / ss_tot) if ss_tot > 0 else None
+
+    percent_accuracy = max(0.0, 100.0 - mape) if mape is not None else None
+
+    return mape, r2, percent_accuracy, None
+
+# --------------------------------------------------------------------
+# Session state defaults (for forecast persistence)
+# --------------------------------------------------------------------
+st.session_state.setdefault('forecast_df', None)
+
+# --------------------------------------------------------------------
+# Sidebar: minimal login (same as before)
+# --------------------------------------------------------------------
+def check_login(username, password):
+    users = {'admin': 'admin123', 'manager': 'manager123'}
+    return users.get(username) == password
+
 with st.sidebar:
-    st.markdown("### 🔌 POWERGRID AI")
-    st.markdown("**Prophet Forecasting**")
+    st.markdown("### 🔌 POWERGRID Forecast")
     st.markdown("Ministry of Power")
     st.markdown("---")
-
-    if st.session_state["authentication_status"]:
-        st.success(f"✅ **{st.session_state.get('name')}**")
-        if st.button("Logout", width="stretch"):
-            st.session_state.clear()
+    if st.session_state.get('authentication_status'):
+        st.success(f"✅ Logged in as: *{st.session_state.get('name')}*")
+        if st.button("Logout", use_container_width=True):
+            st.session_state['authentication_status'] = None
+            st.session_state['name'] = None
+            st.session_state['username'] = None
             st.rerun()
         st.markdown("---")
         st.markdown("### 📊 System Status")
-        st.success("🟢 Ready to train & forecast")
-        st.info("📡 Upload → Train → Forecast")
+        st.success("🟢 Model: Active")
+        st.info("📡 API: Connected")
+        st.success("💾 Database: Online")
     else:
         st.markdown("### 🔐 Login")
-        username = st.text_input("Username")
-        password = st.text_input("Password", type="password")
-
-        if st.button("Login", type="primary", width="stretch"):
-            if check_login(username, password):
-                st.session_state["authentication_status"] = True
-                st.session_state["name"] = username.capitalize()
+        username_input = st.text_input("Username", key="username_input")
+        password_input = st.text_input("Password", type="password", key="password_input")
+        if st.button("Login", type="primary", use_container_width=True):
+            if check_login(username_input, password_input):
+                st.session_state['authentication_status'] = True
+                st.session_state['username'] = username_input
+                st.session_state['name'] = username_input.capitalize()
+                st.success("✅ Login successful!")
                 st.rerun()
             else:
-                st.error("❌ Invalid credentials")
+                st.error("❌ Invalid username or password")
         st.markdown("---")
-        st.info("**Demo:** `admin` / `admin123`")
+        st.info("*Demo Credentials:*\n\nUsername: admin\nPassword: admin123")
 
-# ========== MAIN APP ==========
-if st.session_state["authentication_status"]:
+# --------------------------------------------------------------------
+# Main app content
+# --------------------------------------------------------------------
+if st.session_state.get('authentication_status'):
     st.title("🔌 POWERGRID Material Demand Forecasting System")
-    st.markdown("### Prophet AI‑Powered Supply Chain Intelligence")
+    st.markdown("### Welcome to the Supply Chain Intelligence Platform")
     st.markdown("---")
 
-    # ===== 1. UPLOAD & TRAIN =====
-    st.markdown("### 📤 Upload Dataset & Train Prophet")
-
-    uploaded = st.file_uploader(
-        "Upload CSV with `Date` and `Quantity_Procured` columns",
-        type=["csv"],
-        key="upload",
-    )
-
-    if uploaded:
-        try:
-            df_upload = pd.read_csv(uploaded)
-            st.success(f"✅ **{uploaded.name}** uploaded successfully!")
-            st.info(f"**Rows:** {len(df_upload):,} | **Columns:** {len(df_upload.columns)}")
-
-            st.markdown("#### 📊 Data preview")
-            st.dataframe(df_upload.head(15), width="stretch")
-
-            col1, col2, col3, col4 = st.columns(4)
-            col1.metric("Total rows", f"{len(df_upload):,}")
-            col2.metric("Columns", len(df_upload.columns))
-            if "Quantity_Procured" in df_upload.columns:
-                col3.metric(
-                    "Avg demand",
-                    f"{df_upload['Quantity_Procured'].mean():.0f}",
-                )
-                col4.metric(
-                    "Max demand",
-                    f"{df_upload['Quantity_Procured'].max():.0f}",
-                )
-
-            if st.button(
-                "🚀 Train Prophet on this dataset",
-                type="primary",
-                width="stretch",
-            ):
-                with st.spinner("Cleaning data and training Prophet (monthly)..."):
-                    cleaned = preprocess_csv(df_upload)
-                    monthly = to_monthly_prophet_frame(cleaned)
-
-                    if len(monthly) < 6:
-                        st.error("❌ Not enough data after cleaning/aggregation.")
-                    else:
-                        TEST_MONTHS = 6
-                        if len(monthly) > TEST_MONTHS + 3:
-                            train_df = monthly.iloc[:-TEST_MONTHS].copy()
-                            test_df = monthly.iloc[-TEST_MONTHS:].copy()
-                        else:
-                            train_df = monthly.copy()
-                            test_df = pd.DataFrame(columns=monthly.columns)
-
-                        model = Prophet(
-                            yearly_seasonality=True,
-                            weekly_seasonality=False,
-                            daily_seasonality=False,
-                            seasonality_mode="multiplicative",
-                            changepoint_prior_scale=0.05,
-                            interval_width=0.95,
-                        )
-                        model.add_seasonality(
-                            name="monthly", period=30.5, fourier_order=5
-                        )
-                        model.fit(train_df[["ds", "y"]])
-
-                        mape_val, r2_val = None, None
-                        if len(test_df) > 0:
-                            preds = model.predict(test_df[["ds"]])
-                            y_true = test_df["y"].values
-                            y_pred = preds["yhat"].values
-                            mape_val = safe_mape(y_true, y_pred)
-                            r2_val = r2_score(y_true, y_pred)
-
-                        st.session_state["model"] = model
-                        st.session_state["monthly"] = monthly
-                        st.session_state["mape"] = mape_val
-                        st.session_state["r2"] = r2_val
-                        st.success("✅ Training complete! Scroll down to generate forecast.")
-
-        except Exception as e:
-            st.error(f"❌ Error reading file: {e}")
-
-    st.markdown("---")
-
-    # ===== 2. FORECAST GRAPH =====
-    st.markdown("### 🔮 Forecast")
-
-    if "model" not in st.session_state:
-        st.info("Upload a CSV and train Prophet above to enable forecasting.")
+    # load model
+    model_or_error = load_model(MODEL_PATH)
+    if isinstance(model_or_error, Exception):
+        st.error(f"Error loading model: {model_or_error}")
+        model = None
     else:
-        model = st.session_state["model"]
-        monthly = st.session_state["monthly"]
+        model = model_or_error
 
-        col_left, col_right = st.columns([1, 2])
-
-        with col_left:
-            horizon = st.number_input(
-                "Forecast horizon (months)",
-                min_value=1,
-                max_value=36,
-                value=6,
-                help="Number of future months to forecast",
-            )
-            show_conf = st.checkbox(
-                "Show 95% confidence interval",
-                value=True,
-            )
-
-            if st.button(
-                "📈 Generate forecast",
-                type="primary",
-                width="stretch",
-            ):
-                with st.spinner("Generating forecast..."):
-                    future = model.make_future_dataframe(
-                        periods=int(horizon), freq="ME"
-                    )
-                    forecast = model.predict(future)
-                    st.session_state["forecast_df"] = forecast.tail(int(horizon))
-                    st.success("✅ Forecast generated below.")
-
-        with col_right:
-            if "forecast_df" in st.session_state:
-                future_only = st.session_state["forecast_df"]
-
-                fig = go.Figure()
-
-                # historical monthly totals
-                fig.add_trace(
-                    go.Scatter(
-                        x=monthly["ds"],
-                        y=monthly["y"],
-                        mode="lines",
-                        name="History",
-                        line=dict(color="gray"),
-                    )
-                )
-
-                # forecast mean
-                fig.add_trace(
-                    go.Scatter(
-                        x=future_only["ds"],
-                        y=future_only["yhat"],
-                        mode="lines+markers",
-                        name="Forecast",
-                        line=dict(color="#FF4B4B", width=3),
-                        marker=dict(size=8),
-                    )
-                )
-
-                if show_conf:
-                    fig.add_trace(
-                        go.Scatter(
-                            x=future_only["ds"],
-                            y=future_only["yhat_upper"],
-                            mode="lines",
-                            line=dict(width=0),
-                            showlegend=False,
-                            hoverinfo="skip",
-                        )
-                    )
-                    fig.add_trace(
-                        go.Scatter(
-                            x=future_only["ds"],
-                            y=future_only["yhat_lower"],
-                            fill="tonexty",
-                            mode="lines",
-                            name="95% interval",
-                            line=dict(width=0),
-                            fillcolor="rgba(255, 75, 75, 0.2)",
-                        )
-                    )
-
-                fig.update_layout(
-                    title=f"Monthly demand forecast – next {int(horizon)} months",
-                    xaxis_title="Date",
-                    yaxis_title="Quantity (units)",
-                    hovermode="x unified",
-                    template="plotly_white",
-                    height=450,
-                )
-                st.plotly_chart(fig, width="stretch")
-
-    # ===== 3. FORECAST TABLE (LOW / MEDIUM / HIGH) =====
-    if "forecast_df" in st.session_state:
-        f = st.session_state["forecast_df"].copy()
-        f["Date"] = pd.to_datetime(f["ds"]).dt.strftime("%Y-%m-%d")
-        f["Forecast"] = f["yhat"].round(0).astype(int)
-        f["Lower_95"] = f["yhat_lower"].round(0).astype(int)
-        f["Upper_95"] = f["yhat_upper"].round(0).astype(int)
-
-        width_interval = (f["Upper_95"] - f["Lower_95"]).replace(0, np.nan)
-        f["Low"] = f["Lower_95"].astype(int)
-        f["Medium"] = (f["Lower_95"] + width_interval * (2 / 3.0)).round(0).astype("Int64")
-        f["High"] = f["Upper_95"].astype(int)
-
-        st.markdown("#### 📊 Forecast table with confidence bands")
-        display_cols = ["Date", "Forecast", "Low", "Medium", "High"]
-        st.dataframe(
-            f[display_cols].reset_index(drop=True),
-            width="stretch",
+    # if model missing, show instruction and placeholders
+    if model is None:
+        st.warning(
+            "No trained model found at powergrid_model.pkl.\n\n"
+            "Run the training: python train_prophet_model.py (after installing prophet), "
+            "or place powergrid_model.pkl in this folder."
         )
-
-        csv_export = f[display_cols].to_csv(index=False)
-        st.download_button(
-            "📥 Download forecast as CSV",
-            csv_export,
-            f"prophet_forecast_{datetime.now():%Y%m%d_%H%M%S}.csv",
-            "text/csv",
-            width="stretch",
-        )
-
-    st.markdown("---")
-
-    # ===== 4. EVALUATION METRICS =====
-    st.markdown("### 📏 Model evaluation")
-
-    mape_val = st.session_state.get("mape")
-    r2_val = st.session_state.get("r2")
-
-    col1, col2 = st.columns(2)
-    if mape_val is not None:
-        col1.metric("MAPE", f"{mape_val:.2f}%")
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Model Accuracy", "N/A")
+        with col2:
+            st.metric("MAPE", "N/A")
+        with col3:
+            st.metric("R²", "N/A")
+        with col4:
+            st.metric("Materials Tracked", "4 Types", "")
     else:
-        col1.metric("MAPE", "N/A")
+        # -----------------------------
+        # Compute validation metrics IMMEDIATELY after loading the model
+        # -----------------------------
+        # Load precomputed metrics saved by the training script (model_metrics.json)
+        METRICS_OUT = Path("model_metrics.json")
 
-    if r2_val is not None:
-        col2.metric("R² score", f"{r2_val:.4f}")
-    else:
-        col2.metric("R² score", "N/A")
+        if METRICS_OUT.exists():
+            try:
+                with open(METRICS_OUT, "r") as f:
+                    metrics = json.load(f)
+                mape = metrics.get("mape")
+                r2 = metrics.get("r2")
+                percent_accuracy = metrics.get("percent_accuracy")
+                # optional info line:
+                st.info(f"Loaded metrics from {METRICS_OUT.name} (trained up to {metrics.get('train_end')})")
+            except Exception as e:
+                mape = None; r2 = None; percent_accuracy = None
+                st.warning(f"Failed to read {METRICS_OUT.name}: {e}")
+        else:
+            # fallback: JSON not found
+            mape = None; r2 = None; percent_accuracy = None
+            st.info("model_metrics.json not found — run train_prophet_model.py to generate it.")
+
+        # Display metrics (from JSON or N/A)
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Model Accuracy", f"{percent_accuracy:.2f}%" if percent_accuracy is not None else "N/A",
+                    help="Derived as (100 - MAPE) when MAPE available")
+        with col2:
+            st.metric("MAPE", f"{mape:.2f}%" if mape is not None else "N/A",
+                    help="MAPE from training holdout (model_metrics.json)")
+        with col3:
+            st.metric("R²", f"{r2:.3f}" if r2 is not None else "N/A",
+                    help="R² from training holdout (model_metrics.json)")
+        with col4:
+            st.metric("Materials Tracked", "4 Types", "")
+
+        st.markdown("---")
+
+        # -----------------------------
+        # Forecast controls (user can generate forecast)
+        # -----------------------------
+        cols = st.columns([1,1,1,2])
+        with cols[0]:
+            periods = st.number_input("Forecast horizon (months)", min_value=1, max_value=36, value=6, step=1)
+        with cols[1]:
+            show_history = st.checkbox("Show historical series on chart", value=True)
+        with cols[2]:
+            if st.button("Generate Forecast"):
+                # generate forecast and persist to session_state so chart is visible after rerun
+                try:
+                    forecast = make_forecast(model, periods_months=int(periods))
+                    st.session_state['forecast_df'] = forecast
+                except Exception as e:
+                    st.error(f"Error during forecasting: {e}")
+                    st.session_state['forecast_df'] = None
+                # optionally recompute metrics on demand (uncomment if needed)
+                # mape, r2, percent_accuracy, msg = compute_validation_metrics(model, HIST_CSV, validation_months)
+                # st.experimental_rerun()
+
+        # If a forecast is already in session_state (generated earlier), display it; otherwise nothing
+        if st.session_state.get('forecast_df') is not None:
+            forecast = st.session_state['forecast_df']
+            plot_df = forecast.set_index('ds')[['yhat','yhat_lower','yhat_upper']]
+            st.subheader("Forecast Chart")
+            if show_history:
+                st.line_chart(plot_df[['yhat']])
+            else:
+                st.line_chart(plot_df.tail(periods)[['yhat']])
+
+            future_only = forecast.tail(periods)[['ds','yhat','yhat_lower','yhat_upper']].copy()
+            future_only = future_only.assign(
+                Forecast=lambda d: d['yhat'].round(0),
+                Lower=lambda d: d['yhat_lower'].round(0),
+                Upper=lambda d: d['yhat_upper'].round(0)
+            )[['ds','Forecast','Lower','Upper']].rename(columns={'ds':'Date'})
+            future_only['Date'] = pd.to_datetime(future_only['Date']).dt.date
+            st.subheader(f"Next {periods} months forecast")
+            st.dataframe(future_only.reset_index(drop=True), use_container_width=True)
 
 else:
     st.title("🔌 POWERGRID Material Demand Forecasting")
-    st.markdown("### Prophet AI‑Powered Supply Chain Intelligence")
+    st.markdown("### Supply Chain Intelligence Platform")
     st.markdown("---")
-    st.info(
-        "### 🔐 Authentication required\n\n"
-        "Please login using the sidebar to access the forecasting system."
-    )
-
-st.markdown("---")
-st.caption(
-    "© 2025 POWERGRID Corporation of India | Powered by Prophet (Meta) | Ministry of Power"
-)
+    st.info("### 🔐 Authentication Required\n\nPlease login using the sidebar to access the platform.")
